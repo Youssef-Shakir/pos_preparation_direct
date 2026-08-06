@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Extend POS Category Form -->
+    <record id="pos_category_form_view_inherit" model="ir.ui.view">
+        <field name="name">pos.category.form.inherit.preparation.direct</field>
+        <field name="model">pos.category</field>
+        <field name="inherit_id" ref="point_of_sale.product_pos_category_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//group[@name='sequence']" position="after">
+                <group string="Preparation Printing">
+                    <field name="preparation_printer_ids" widget="many2many_tags"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

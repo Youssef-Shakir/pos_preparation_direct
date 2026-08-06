@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Extend POS Order Form -->
+    <record id="pos_order_view_form_inherit" model="ir.ui.view">
+        <field name="name">pos.order.form.inherit.preparation.direct</field>
+        <field name="model">pos.order</field>
+        <field name="inherit_id" ref="point_of_sale.view_pos_pos_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_view_preparation_jobs" type="object" class="oe_stat_button" icon="fa-print" invisible="preparation_job_count == 0">
+                    <field name="preparation_job_count" string="Prep Jobs" widget="statinfo"/>
+                </button>
+            </xpath>
+            <xpath expr="//header" position="inside">
+                <button name="action_resend_to_preparation" type="object" string="Resend to Preparation" class="btn-secondary"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Extend POS Order Line Tree (inside order form) -->
+    <record id="pos_order_line_view_tree_inherit" model="ir.ui.view">
+        <field name="name">pos.order.line.tree.inherit.preparation.direct</field>
+        <field name="model">pos.order.line</field>
+        <field name="inherit_id" ref="point_of_sale.view_pos_order_line"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='qty']" position="after">
+                <field name="preparation_printed" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

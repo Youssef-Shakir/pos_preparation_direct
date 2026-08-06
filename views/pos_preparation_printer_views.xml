@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Printer List View -->
+    <record id="pos_preparation_printer_view_list" model="ir.ui.view">
+        <field name="name">pos.preparation.printer.list</field>
+        <field name="model">pos.preparation.printer</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="printer_type"/>
+                <field name="ip_address"/>
+                <field name="port"/>
+                <field name="paper_width"/>
+                <field name="job_count"/>
+                <field name="active" column_invisible="True"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Printer Form View -->
+    <record id="pos_preparation_printer_view_form" model="ir.ui.view">
+        <field name="name">pos.preparation.printer.form</field>
+        <field name="model">pos.preparation.printer</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_test_connection" type="object" string="Test Connection" class="btn-primary"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_jobs" type="object" class="oe_stat_button" icon="fa-print">
+                            <field name="job_count" string="Jobs" widget="statinfo"/>
+                        </button>
+                    </div>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger" invisible="active"/>
+                    <div class="oe_title">
+                        <h1>
+                            <field name="name" placeholder="Printer Name"/>
+                        </h1>
+                    </div>
+                    <group>
+                        <group string="Network Settings">
+                            <field name="ip_address"/>
+                            <field name="port"/>
+                        </group>
+                        <group string="Printer Settings">
+                            <field name="printer_type"/>
+                            <field name="codepage"/>
+                            <field name="paper_width"/>
+                            <field name="auto_cut"/>
+                            <field name="beep"/>
+                        </group>
+                    </group>
+                    <group string="Linked To">
+                        <field name="pos_config_ids" widget="many2many_tags"/>
+                        <field name="pos_category_ids" widget="many2many_tags"/>
+                    </group>
+                    <field name="active" invisible="1"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Printer Action -->
+    <record id="pos_preparation_printer_action" model="ir.actions.act_window">
+        <field name="name">Preparation Printers</field>
+        <field name="res_model">pos.preparation.printer</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Create a preparation printer
+            </p>
+            <p>
+                Configure ESC/POS thermal printers for kitchen/bar preparation tickets.
+            </p>
+        </field>
+    </record>
+
+    <!-- Job List View -->
+    <record id="pos_preparation_job_view_list" model="ir.ui.view">
+        <field name="name">pos.preparation.job.list</field>
+        <field name="model">pos.preparation.job</field>
+        <field name="arch" type="xml">
+            <list decoration-success="state == 'printed'" decoration-danger="state == 'failed'" decoration-info="state == 'pending'">
+                <field name="create_date"/>
+                <field name="printer_id"/>
+                <field name="order_name"/>
+                <field name="table_name"/>
+                <field name="line_summary"/>
+                <field name="state"/>
+                <field name="printed_date"/>
+                <field name="error_message" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Job Form View -->
+    <record id="pos_preparation_job_view_form" model="ir.ui.view">
+        <field name="name">pos.preparation.job.form</field>
+        <field name="model">pos.preparation.job</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_retry" type="object" string="Retry Print" class="btn-primary" invisible="state != 'failed'"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="printer_id"/>
+                            <field name="order_id"/>
+                            <field name="order_name"/>
+                        </group>
+                        <group>
+                            <field name="table_name"/>
+                            <field name="floor_name"/>
+                            <field name="waiter_name"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group>
+                            <field name="create_date"/>
+                            <field name="printed_date"/>
+                            <field name="retry_count"/>
+                        </group>
+                        <group>
+                            <field name="error_message" invisible="state != 'failed'"/>
+                        </group>
+                    </group>
+                    <group string="Order Lines">
+                        <field name="line_data" widget="json"/>
+                    </group>
+                    <group string="Customer Note" invisible="not customer_note">
+                        <field name="customer_note" nolabel="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Job Action -->
+    <record id="pos_preparation_job_action" model="ir.actions.act_window">
+        <field name="name">Preparation Jobs</field>
+        <field name="res_model">pos.preparation.job</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <!-- Menu Items -->
+    <menuitem id="pos_preparation_menu_root" name="Preparation Printing" parent="point_of_sale.menu_point_config_product" sequence="50"/>
+    <menuitem id="pos_preparation_printer_menu" name="Printers" parent="pos_preparation_menu_root" action="pos_preparation_printer_action" sequence="10"/>
+    <menuitem id="pos_preparation_job_menu" name="Print Jobs" parent="pos_preparation_menu_root" action="pos_preparation_job_action" sequence="20"/>
+
+</odoo>
