@@ -183,6 +183,13 @@ def build_preparation_ticket(data, printer_settings):
     output.extend(ALIGN_CENTER)
     output.extend(encode_text("** PREPARATION TICKET **", codepage))
     output.extend(LF)
+
+    # Custom footer text
+    footer_text = printer_settings.get('footer_text', '')
+    if footer_text:
+        output.extend(encode_text(footer_text, codepage))
+        output.extend(LF)
+
     output.extend(ALIGN_LEFT)
 
     # Beep

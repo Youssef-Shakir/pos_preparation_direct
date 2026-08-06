@@ -50,6 +50,7 @@
                             <field name="paper_width"/>
                             <field name="auto_cut"/>
                             <field name="beep"/>
+                            <field name="footer_text" placeholder="e.g. Your Restaurant Name"/>
                         </group>
                     </group>
                     <group string="Linked To">

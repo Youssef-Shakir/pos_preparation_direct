@@ -36,6 +36,7 @@ class PosPreparationPrinter(models.Model):
     ], string='Paper Width', default='42', required=True)
     auto_cut = fields.Boolean(string='Auto Cut', default=True)
     beep = fields.Boolean(string='Beep on Print', default=True)
+    footer_text = fields.Char(string='Footer Text', help='Custom text to print at the bottom of tickets')
 
     # Relations
     pos_config_ids = fields.Many2many(
@@ -72,6 +73,7 @@ class PosPreparationPrinter(models.Model):
             'paper_width': int(self.paper_width),
             'auto_cut': self.auto_cut,
             'beep': self.beep,
+            'footer_text': self.footer_text or '',
         }
 
     def action_test_connection(self):

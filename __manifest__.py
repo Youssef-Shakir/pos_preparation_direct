@@ -7,7 +7,8 @@
         Print preparation tickets directly to network ESC/POS printers.
         No agent required - prints directly from Odoo server to printers on the same network.
     """,
-    'author': 'Your Company',
+    'author': 'Yousif Shakir',
+    'website': 'https://donialink.com',
     'depends': ['point_of_sale', 'pos_restaurant'],
     'data': [
         'security/ir.model.access.csv',
