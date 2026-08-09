@@ -28,6 +28,9 @@ class PosPreparationPrinter(models.Model):
         ('cp850', 'PC850 (Western European)'),
         ('cp860', 'PC860 (Portuguese)'),
         ('cp1252', 'Windows-1252'),
+        ('cp864', 'PC864 (Arabic DOS)'),
+        ('cp1256', 'Windows-1256 (Arabic)'),
+        ('utf8', 'UTF-8 (Modern Printers)'),
     ], string='Codepage', default='cp437', required=True)
     paper_width = fields.Selection([
         ('32', '58mm (32 chars)'),

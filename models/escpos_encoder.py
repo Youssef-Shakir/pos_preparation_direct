@@ -39,19 +39,32 @@ CODEPAGE_PC437 = ESC + b't\x00'
 CODEPAGE_PC850 = ESC + b't\x02'
 CODEPAGE_PC860 = ESC + b't\x03'
 CODEPAGE_PC1252 = ESC + b't\x10'
+CODEPAGE_PC864 = ESC + b't\x15'  # Arabic DOS
+CODEPAGE_PC1256 = ESC + b't\x28'  # Arabic Windows
 
 CODEPAGE_MAP = {
     'cp437': CODEPAGE_PC437,
     'cp850': CODEPAGE_PC850,
     'cp860': CODEPAGE_PC860,
     'cp1252': CODEPAGE_PC1252,
+    'cp864': CODEPAGE_PC864,
+    'cp1256': CODEPAGE_PC1256,
+    'utf8': None,  # UTF-8 printers don't need codepage command
 }
 
 
 def encode_text(text, codepage='cp437'):
     """Encode text to bytes using the specified codepage."""
     try:
+        if codepage == 'utf8':
+            return text.encode('utf-8', errors='replace')
         return text.encode(codepage, errors='replace')
+    except LookupError:
+        # Unknown codepage, try UTF-8 then ASCII
+        try:
+            return text.encode('utf-8', errors='replace')
+        except Exception:
+            return text.encode('ascii', errors='replace')
     except Exception:
         return text.encode('ascii', errors='replace')
 
@@ -93,7 +106,7 @@ def build_preparation_ticket(data, printer_settings):
     output.extend(INIT)
 
     # Set codepage
-    if codepage in CODEPAGE_MAP:
+    if codepage in CODEPAGE_MAP and CODEPAGE_MAP[codepage] is not None:
         output.extend(CODEPAGE_MAP[codepage])
 
     # Header - Table/Floor info (large, bold, centered)
