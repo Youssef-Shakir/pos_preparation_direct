@@ -41,6 +41,23 @@ class PosPreparationPrinter(models.Model):
     beep = fields.Boolean(string='Beep on Print', default=True)
     footer_text = fields.Char(string='Footer Text', help='Custom text to print at the bottom of tickets')
 
+    # Retry settings
+    retry_count = fields.Integer(
+        string='Retry Attempts',
+        default=3,
+        help='Number of times to retry if printer is offline'
+    )
+    retry_interval = fields.Integer(
+        string='Retry Interval (seconds)',
+        default=30,
+        help='Seconds to wait between retry attempts'
+    )
+    connection_timeout = fields.Integer(
+        string='Connection Timeout (seconds)',
+        default=5,
+        help='Seconds to wait for printer connection'
+    )
+
     # Relations
     pos_config_ids = fields.Many2many(
         'pos.config',
@@ -119,35 +136,52 @@ class PosPreparationPrinter(models.Model):
         else:
             raise UserError(_('Print failed: %s') % error)
 
-    def print_ticket(self, data):
+    def print_ticket(self, data, use_retry=True):
         """
-        Print a preparation ticket.
+        Print a preparation ticket with retry support.
 
         Args:
             data: dict with table_name, floor_name, waiter_name, order_name, customer_note, lines
+            use_retry: bool, whether to use retry logic (default True)
 
         Returns:
             tuple: (success: bool, error_message: str or None)
         """
         self.ensure_one()
+        import time
 
         ticket_bytes = escpos_encoder.build_preparation_ticket(
             data,
             self._get_printer_settings()
         )
 
-        success, error = escpos_encoder.send_to_printer(
-            self.ip_address,
-            self.port,
-            ticket_bytes
-        )
+        max_attempts = self.retry_count + 1 if use_retry else 1
+        retry_interval = self.retry_interval
+        timeout = self.connection_timeout
 
-        if success:
-            _logger.info(f"Successfully printed to {self.name} ({self.ip_address}:{self.port})")
-        else:
-            _logger.error(f"Failed to print to {self.name}: {error}")
+        last_error = None
 
-        return success, error
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                _logger.info(f"Retry attempt {attempt}/{self.retry_count} for {self.name} in {retry_interval}s...")
+                time.sleep(retry_interval)
+
+            success, error = escpos_encoder.send_to_printer(
+                self.ip_address,
+                self.port,
+                ticket_bytes,
+                timeout=timeout
+            )
+
+            if success:
+                _logger.info(f"Successfully printed to {self.name} ({self.ip_address}:{self.port})")
+                return True, None
+
+            last_error = error
+            _logger.warning(f"Print attempt {attempt + 1}/{max_attempts} failed for {self.name}: {error}")
+
+        _logger.error(f"All print attempts failed for {self.name}: {last_error}")
+        return False, last_error
 
     def action_view_jobs(self):
         """View all jobs for this printer."""
