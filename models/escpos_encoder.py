@@ -1,7 +1,20 @@
 import socket
 import logging
+import unicodedata
 
 _logger = logging.getLogger(__name__)
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    _ARABIC_LIBS_AVAILABLE = True
+except ImportError:
+    _ARABIC_LIBS_AVAILABLE = False
+    _logger.warning(
+        "arabic_reshaper / python-bidi not installed. "
+        "Arabic text will print corrupted. "
+        "Run: pip install arabic-reshaper python-bidi"
+    )
 
 # ESC/POS Command Constants
 ESC = b'\x1b'
@@ -53,14 +66,28 @@ CODEPAGE_MAP = {
 }
 
 
+def _has_arabic(text):
+    """Return True if text contains any Arabic Unicode characters."""
+    return any('\u0600' <= ch <= '\u06FF' or '\u0750' <= ch <= '\u077F' for ch in text)
+
+
+def _prepare_arabic(text):
+    """Reshape and apply bidi reordering so thermal printers render Arabic correctly."""
+    if not _ARABIC_LIBS_AVAILABLE:
+        return text
+    reshaped = arabic_reshaper.reshape(text)
+    return get_display(reshaped)
+
+
 def encode_text(text, codepage='cp437'):
     """Encode text to bytes using the specified codepage."""
+    if _has_arabic(text):
+        text = _prepare_arabic(text)
     try:
         if codepage == 'utf8':
             return text.encode('utf-8', errors='replace')
         return text.encode(codepage, errors='replace')
     except LookupError:
-        # Unknown codepage, try UTF-8 then ASCII
         try:
             return text.encode('utf-8', errors='replace')
         except Exception:
