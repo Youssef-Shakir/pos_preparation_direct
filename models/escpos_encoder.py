@@ -66,23 +66,42 @@ CODEPAGE_MAP = {
 }
 
 
+_BIDI_CONTROL_CHARS = {
+    '\u200e', '\u200f',  # LRM, RLM
+    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',  # LRE, RLE, PDF, LRO, RLO
+    '\u2066', '\u2067', '\u2068', '\u2069',  # LRI, RLI, FSI, PDI
+}
+
+
 def _has_arabic(text):
-    """Return True if text contains any Arabic Unicode characters."""
     return any('\u0600' <= ch <= '\u06FF' or '\u0750' <= ch <= '\u077F' for ch in text)
 
 
-def _prepare_arabic(text):
-    """Reshape and apply bidi reordering so thermal printers render Arabic correctly."""
+def _strip_bidi_controls(text):
+    return ''.join(ch for ch in text if ch not in _BIDI_CONTROL_CHARS)
+
+
+def _prepare_arabic(text, codepage='utf8'):
     if not _ARABIC_LIBS_AVAILABLE:
         return text
-    reshaped = arabic_reshaper.reshape(text)
-    return get_display(reshaped)
+
+    if codepage in ('cp864', 'cp1256'):
+        # Legacy codepages: printer cannot shape internally; reshape to
+        # presentation forms (Python's codec maps them to the right bytes),
+        # then reorder for LTR output.
+        reshaped = arabic_reshaper.reshape(text)
+        return _strip_bidi_controls(get_display(reshaped))
+    else:
+        # UTF-8 (PP7 and similar): the printer's UTF-8 Arabic font handles
+        # glyph shaping internally but prints LTR, so we only need bidi
+        # reordering. Skipping reshape avoids sending Presentation Form code
+        # points (U+FE70–U+FEFF) that many printer fonts lack (shows as '?').
+        return _strip_bidi_controls(get_display(text))
 
 
 def encode_text(text, codepage='cp437'):
-    """Encode text to bytes using the specified codepage."""
     if _has_arabic(text):
-        text = _prepare_arabic(text)
+        text = _prepare_arabic(text, codepage)
     try:
         if codepage == 'utf8':
             return text.encode('utf-8', errors='replace')
