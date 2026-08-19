@@ -83,9 +83,10 @@ def _make_img(text, size):
 
 def _make_item_img(qty, name, size):
     """Render qty and Arabic name as a single bitmap (no mixed text/image gaps)."""
-    font     = ImageFont.truetype(_FONT_PATH, size)
-    qty_str  = f'{int(qty)}x  '
-    ara_str  = _shape(name)
+    font    = ImageFont.truetype(_FONT_PATH, size)
+    qty_int = int(qty)
+    qty_str = f'** CANCEL {abs(qty_int)}x **  ' if qty_int < 0 else f'{qty_int}x  '
+    ara_str = _shape(name)
 
     tmp  = Image.new('RGB', (4000, 400), 'white')
     draw = ImageDraw.Draw(tmp)

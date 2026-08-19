@@ -116,7 +116,7 @@ class PosOrder(models.Model):
             for line in self.lines:
                 # Calculate new quantity to print
                 new_qty = line.qty - line.preparation_printed_qty
-                if new_qty <= 0:
+                if new_qty == 0:
                     continue
 
                 printers = self._get_preparation_printers_for_line(line)

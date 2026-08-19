@@ -51,7 +51,7 @@ patch(PosStore.prototype, {
             const currentQty = line.get_quantity();
             const newQty = currentQty - lineSentQty;
 
-            if (newQty > 0) {
+            if (newQty !== 0) {
                 unsent.push({
                     line: line,
                     newQty: newQty,
