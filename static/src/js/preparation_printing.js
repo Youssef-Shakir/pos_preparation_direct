@@ -112,6 +112,7 @@ patch(PosStore.prototype, {
                 product_name: line.get_full_product_name(),
                 qty: newQty,
                 note: line.note || "",
+                line_uuid: line.uuid || "",
             }));
 
             // Get table info if available
@@ -146,6 +147,7 @@ patch(PosStore.prototype, {
                 waiter_name: waiterName,
                 order_name: orderName,
                 customer_note: customerNote,
+                order_uuid: order.uuid || "",
             });
 
             console.log("[PrepDirectPrint] RPC result:", result);
