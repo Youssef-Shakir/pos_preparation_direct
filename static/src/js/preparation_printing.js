@@ -6,38 +6,30 @@ import { rpc } from "@web/core/network/rpc";
 
 console.log("[PrepDirectPrint] Module loading...");
 
-// Track sent quantities per order to avoid duplicate prints
+// Track sent quantities per order to avoid duplicate prints (within same tab session)
 const preparationSentQty = {};
 
-/**
- * Patch PosStore to send preparation tickets to ESC/POS printers
- */
 patch(PosStore.prototype, {
 
-    /**
-     * Override sendOrderInPreparation to send to direct ESC/POS printers
-     */
     async sendOrderInPreparation(order, cancelled = false) {
-        console.log("[PrepDirectPrint] sendOrderInPreparation called", { order: order?.uuid, cancelled });
+        console.log("[PrepDirectPrint] sendOrderInPreparation called", {
+            orderUuid: order?.uuid,
+            orderId: order?.id,
+            cancelled,
+        });
 
-        // Call original method first
+        // Call original first — this syncs the order to the server and assigns server IDs
         const result = await super.sendOrderInPreparation(order, cancelled);
 
-        // Don't print if this is a cancellation
         if (cancelled) {
-            console.log("[PrepDirectPrint] Skipping - cancellation");
+            console.log("[PrepDirectPrint] Skipping — cancellation");
             return result;
         }
 
-        // Send to preparation printers
         await this._sendToDirectPreparationPrinters(order);
-
         return result;
     },
 
-    /**
-     * Get lines that have new quantity to send to preparation
-     */
     _getUnsentDirectPreparationLines(order) {
         const orderUuid = order.uuid;
         if (!preparationSentQty[orderUuid]) {
@@ -47,97 +39,93 @@ patch(PosStore.prototype, {
 
         const unsent = [];
         for (const line of order.get_orderlines()) {
-            const lineSentQty = sentQty[line.uuid] || 0;
+            // Use line.id (server DB id) as key — more stable than uuid across tabs
+            const lineKey = line.id || line.uuid;
+            const lineSentQty = sentQty[lineKey] || 0;
             const currentQty = line.get_quantity();
             const newQty = currentQty - lineSentQty;
 
+            console.log("[PrepDirectPrint] Line check:", {
+                lineKey,
+                lineId: line.id,
+                lineUuid: line.uuid,
+                product: line.get_full_product_name?.() || line.product_id?.display_name,
+                currentQty,
+                lineSentQty,
+                newQty,
+            });
+
             if (newQty !== 0) {
-                unsent.push({
-                    line: line,
-                    newQty: newQty,
-                    totalQty: currentQty,
-                });
+                unsent.push({ line, newQty, totalQty: currentQty });
             }
         }
+
+        console.log("[PrepDirectPrint] Unsent lines count:", unsent.length);
         return unsent;
     },
 
-    /**
-     * Mark lines as sent to preparation
-     */
     _markDirectLinesSentToPreparation(order) {
         const orderUuid = order.uuid;
         if (!preparationSentQty[orderUuid]) {
             preparationSentQty[orderUuid] = {};
         }
-
         for (const line of order.get_orderlines()) {
-            preparationSentQty[orderUuid][line.uuid] = line.get_quantity();
+            const lineKey = line.id || line.uuid;
+            preparationSentQty[orderUuid][lineKey] = line.get_quantity();
         }
+        console.log("[PrepDirectPrint] Marked sent:", preparationSentQty[orderUuid]);
     },
 
-    /**
-     * Send the current order to ESC/POS preparation printers (direct print)
-     */
     async _sendToDirectPreparationPrinters(order) {
-        console.log("[PrepDirectPrint] _sendToDirectPreparationPrinters called");
-
         if (!order) {
-            console.log("[PrepDirectPrint] No order provided");
+            console.log("[PrepDirectPrint] No order — aborting");
             return;
         }
 
-        // Check if preparation printing is enabled
-        console.log("[PrepDirectPrint] Config:", this.config);
-        console.log("[PrepDirectPrint] use_preparation_printing:", this.config?.use_preparation_printing);
-
-        if (!this.config || !this.config.use_preparation_printing) {
+        if (!this.config?.use_preparation_printing) {
             console.log("[PrepDirectPrint] Preparation printing not enabled");
             return;
         }
 
-        // Get lines that haven't been sent yet
         const unsentLines = this._getUnsentDirectPreparationLines(order);
-        console.log("[PrepDirectPrint] Unsent lines:", unsentLines.length);
-
         if (unsentLines.length === 0) {
-            console.log("[PrepDirectPrint] No unsent lines");
+            console.log("[PrepDirectPrint] Nothing to print");
             return;
         }
 
         try {
-            // Build line data
-            const linesData = unsentLines.map(({ line, newQty }) => ({
-                product_id: line.product_id?.id || line.product_id,
-                product_name: line.get_full_product_name(),
-                qty: newQty,
-                note: line.note || "",
-                line_uuid: line.uuid || "",
-            }));
+            const linesData = unsentLines.map(({ line, newQty }) => {
+                const entry = {
+                    product_id: line.product_id?.id || line.product_id,
+                    product_name: line.get_full_product_name?.() || "",
+                    qty: newQty,
+                    note: line.note || "",
+                    // Send both so server can find the line whichever way works
+                    line_id: line.id || 0,
+                    line_uuid: line.uuid || "",
+                };
+                console.log("[PrepDirectPrint] Line to send:", entry);
+                return entry;
+            });
 
-            // Get table info if available
             let tableName = "";
             let floorName = "";
             if (order.table_id) {
                 tableName = order.table_id.table_number?.toString() || order.table_id.name || "";
-                if (order.table_id.floor_id) {
-                    floorName = order.table_id.floor_id.name || "";
-                }
+                floorName = order.table_id.floor_id?.name || "";
             }
 
-            // Get waiter name
-            let waiterName = "";
-            if (this.cashier) {
-                waiterName = this.cashier.name || "";
-            }
-
-            // Get order name/reference
+            const waiterName = this.cashier?.name || "";
             const orderName = order.name || order.pos_reference || `Order ${order.uuid?.substring(0, 8) || ""}`;
-
-            // Get customer note
             const customerNote = order.note || order.customer_note || "";
 
-            console.log("[PrepDirectPrint] Sending RPC with lines:", linesData);
+            // After super.sendOrderInPreparation(), the order should have a server ID
+            console.log("[PrepDirectPrint] Sending RPC — order details:", {
+                orderId: order.id,
+                orderUuid: order.uuid,
+                linesCount: linesData.length,
+                lines: linesData,
+            });
 
             const result = await rpc("/pos_preparation_direct/print", {
                 config_id: this.config.id,
@@ -148,16 +136,16 @@ patch(PosStore.prototype, {
                 order_name: orderName,
                 customer_note: customerNote,
                 order_uuid: order.uuid || "",
+                order_id: order.id || 0,
             });
 
             console.log("[PrepDirectPrint] RPC result:", result);
 
             if (result.success || result.job_count > 0) {
-                // Mark lines as sent
                 this._markDirectLinesSentToPreparation(order);
             }
 
-            if (result.errors && result.errors.length > 0) {
+            if (result.errors?.length > 0) {
                 console.warn("[PrepDirectPrint] Some prints failed:", result.errors);
             }
 
