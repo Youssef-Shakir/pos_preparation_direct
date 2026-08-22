@@ -204,6 +204,7 @@ class PosPreparationJob(models.Model):
     printer_id = fields.Many2one('pos.preparation.printer', string='Printer', required=True, ondelete='cascade')
     order_id = fields.Many2one('pos.order', string='POS Order', ondelete='set null')
     order_name = fields.Char(string='Order Reference')
+    order_uuid = fields.Char(string='Order UUID', index=True)
 
     state = fields.Selection([
         ('pending', 'Pending'),

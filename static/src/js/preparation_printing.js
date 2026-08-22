@@ -95,13 +95,16 @@ patch(PosStore.prototype, {
 
         try {
             const linesData = unsentLines.map(({ line, newQty }) => {
+                // line.id in Odoo 18 is a real integer when synced from server,
+                // or a string like 'pos.order.line_3' for locally-created lines.
+                // Only send line_id when it's a proper integer.
+                const lineId = typeof line.id === 'number' ? line.id : 0;
                 const entry = {
                     product_id: line.product_id?.id || line.product_id,
                     product_name: line.get_full_product_name?.() || "",
                     qty: newQty,
                     note: line.note || "",
-                    // Send both so server can find the line whichever way works
-                    line_id: line.id || 0,
+                    line_id: lineId,
                     line_uuid: line.uuid || "",
                 };
                 console.log("[PrepDirectPrint] Line to send:", entry);
@@ -136,7 +139,7 @@ patch(PosStore.prototype, {
                 order_name: orderName,
                 customer_note: customerNote,
                 order_uuid: order.uuid || "",
-                order_id: order.id || 0,
+                order_id: typeof order.id === 'number' ? order.id : 0,
             });
 
             console.log("[PrepDirectPrint] RPC result:", result);
