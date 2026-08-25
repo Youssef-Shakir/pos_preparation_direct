@@ -201,10 +201,24 @@ class PosPreparationJob(models.Model):
     _description = 'POS Preparation Print Job'
     _order = 'create_date desc'
 
+    # Unique idempotency key per print attempt — prevents duplicate prints
+    # from race conditions (two tabs firing simultaneously).
+    # NULL values are allowed for records that pre-date this field.
+    _sql_constraints = [
+        ('print_request_id_uniq', 'UNIQUE(print_request_id)',
+         'This print request has already been processed.'),
+    ]
+
     printer_id = fields.Many2one('pos.preparation.printer', string='Printer', required=True, ondelete='cascade')
     order_id = fields.Many2one('pos.order', string='POS Order', ondelete='set null')
     order_name = fields.Char(string='Order Reference')
     order_uuid = fields.Char(string='Order UUID', index=True)
+
+    # Idempotency key sent from the browser per print attempt
+    print_request_id = fields.Char(string='Request ID', index=True)
+
+    # Sequential ticket number for physical receipt identification
+    ticket_number = fields.Integer(string='Ticket #', readonly=True, index=True)
 
     state = fields.Selection([
         ('pending', 'Pending'),
@@ -223,6 +237,7 @@ class PosPreparationJob(models.Model):
     retry_count = fields.Integer(string='Retry Count', default=0)
 
     line_summary = fields.Char(string='Summary', compute='_compute_line_summary')
+    preview_text = fields.Text(string='Ticket Preview', compute='_compute_preview_text', store=False)
 
     @api.depends('line_data')
     def _compute_line_summary(self):
@@ -235,6 +250,38 @@ class PosPreparationJob(models.Model):
                     job.line_summary += f" +{len(lines) - 3} more"
             else:
                 job.line_summary = ''
+
+    @api.depends('line_data', 'order_name', 'table_name', 'floor_name',
+                 'waiter_name', 'ticket_number', 'printed_date', 'customer_note')
+    def _compute_preview_text(self):
+        for job in self:
+            parts = []
+            if job.ticket_number:
+                parts.append(f"=== TICKET #{job.ticket_number:04d} ===")
+            if job.table_name:
+                floor = f"{job.floor_name} - " if job.floor_name else ""
+                parts.append(f"TABLE: {floor}{job.table_name}")
+            if job.order_name:
+                parts.append(f"Order: {job.order_name}")
+            if job.waiter_name:
+                parts.append(f"Waiter: {job.waiter_name}")
+            if job.printed_date:
+                parts.append(f"Printed: {job.printed_date}")
+            parts.append("-" * 32)
+            for item in (job.line_data or []):
+                qty = item.get('qty', 1)
+                name = item.get('product_name', '')
+                note = item.get('note', '')
+                if int(qty) < 0:
+                    parts.append(f"  ** CANCEL {abs(int(qty))}x {name}")
+                else:
+                    parts.append(f"  {int(qty)}x {name}")
+                if note:
+                    parts.append(f"    >> {note}")
+            if job.customer_note:
+                parts.append("-" * 32)
+                parts.append(f"NOTE: {job.customer_note}")
+            job.preview_text = '\n'.join(parts)
 
     def action_retry(self):
         """Retry printing a failed job."""

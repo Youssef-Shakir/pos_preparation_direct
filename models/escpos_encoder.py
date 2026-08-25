@@ -198,8 +198,10 @@ def build_preparation_ticket(data, printer_settings):
         return _encode_text_fallback(f'{int(qty)}x {name}', codepage) + LF
 
     # ── Header ────────────────────────────────────────────────────────────────
-    table_name = data.get('table_name', '')
-    floor_name = data.get('floor_name', '')
+    table_name    = data.get('table_name', '')
+    floor_name    = data.get('floor_name', '')
+    ticket_number = data.get('ticket_number', 0)
+
     if table_name:
         header = f"{floor_name} - TABLE {table_name}" if floor_name else f"TABLE {table_name}"
     else:
@@ -207,6 +209,16 @@ def build_preparation_ticket(data, printer_settings):
 
     out += rtext(header, sz_header)
     out += _sep('=')
+
+    # Ticket number line — helps identify which print job this receipt belongs to
+    ticket_line = f"Ticket #{ticket_number:04d}" if ticket_number else ""
+    time_str    = datetime.now().strftime('%Y-%m-%d %H:%M')
+    if ticket_line:
+        out += rtext(f"{ticket_line}   {time_str}", sz_small)
+    else:
+        out += rtext(time_str, sz_small)
+
+    out += _sep('-')
 
     # ── Order meta ────────────────────────────────────────────────────────────
     order_name = data.get('order_name', '')
@@ -217,7 +229,6 @@ def build_preparation_ticket(data, printer_settings):
     if waiter_name:
         out += rtext(f"Waiter: {waiter_name}", sz_small)
 
-    out += rtext(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}", sz_small)
     out += _sep('-')
 
     # ── Item lines ────────────────────────────────────────────────────────────

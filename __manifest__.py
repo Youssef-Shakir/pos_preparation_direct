@@ -1,6 +1,6 @@
 {
     'name': 'POS Preparation Direct Print',
-    'version': '18.0.1.0.0',
+    'version': '18.0.1.1.0',
     'category': 'Point of Sale',
     'summary': 'Direct ESC/POS printing for kitchen/bar preparation tickets',
     'description': """
@@ -12,6 +12,7 @@
     'depends': ['point_of_sale', 'pos_restaurant'],
     'data': [
         'security/ir.model.access.csv',
+        'data/sequences.xml',
         'views/pos_preparation_printer_views.xml',
         'views/pos_category_views.xml',
         'views/pos_config_views.xml',

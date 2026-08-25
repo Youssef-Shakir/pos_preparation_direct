@@ -91,6 +91,7 @@
         <field name="model">pos.preparation.job</field>
         <field name="arch" type="xml">
             <list decoration-success="state == 'printed'" decoration-danger="state == 'failed'" decoration-info="state == 'pending'">
+                <field name="ticket_number" string="Ticket #"/>
                 <field name="create_date"/>
                 <field name="printer_id"/>
                 <field name="order_name"/>
@@ -114,6 +115,12 @@
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
+                    <div class="oe_title">
+                        <h1>
+                            <span invisible="not ticket_number">Ticket #</span>
+                            <field name="ticket_number" readonly="1" invisible="not ticket_number"/>
+                        </h1>
+                    </div>
                     <group>
                         <group>
                             <field name="printer_id"/>
@@ -133,10 +140,14 @@
                             <field name="retry_count"/>
                         </group>
                         <group>
+                            <field name="print_request_id" string="Request ID" optional="hide"/>
                             <field name="error_message" invisible="state != 'failed'"/>
                         </group>
                     </group>
-                    <group string="Order Lines">
+                    <group string="Ticket Preview">
+                        <field name="preview_text" nolabel="1" widget="text" readonly="1"/>
+                    </group>
+                    <group string="Raw Line Data (debug)">
                         <field name="line_data" widget="json"/>
                     </group>
                     <group string="Customer Note" invisible="not customer_note">
