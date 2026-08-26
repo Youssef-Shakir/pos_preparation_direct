@@ -30,24 +30,6 @@ class PosPreparationDirectController(http.Controller):
 
         Job = request.env['pos.preparation.job']
 
-        # ── Idempotency: reject duplicate requests ────────────────────────────
-        # Two tabs firing at the same millisecond each generate a unique
-        # print_request_id. The UNIQUE constraint on that column means only
-        # one INSERT wins; the other gets IntegrityError → return early.
-        if print_request_id:
-            existing = Job.sudo().search(
-                [('print_request_id', '=', print_request_id)], limit=1)
-            if existing:
-                _logger.info(
-                    "[PrepDirect] Duplicate request_id=%s — already job #%s state=%s",
-                    print_request_id, existing.ticket_number, existing.state)
-                return {
-                    'success': existing.state == 'printed',
-                    'job_count': 1,
-                    'duplicate': True,
-                    'ticket_number': existing.ticket_number,
-                }
-
         config = request.env['pos.config'].browse(config_id)
         if not config.exists():
             return {'success': False, 'error': 'Invalid POS configuration'}
@@ -71,7 +53,7 @@ class PosPreparationDirectController(http.Controller):
             pos_order = request.env['pos.order'].search(
                 [('uuid', '=', order_uuid)], limit=1) or None
 
-        # ── Build lookup map: DB-line-id / uuid → pos.order.line ─────────────
+        # ── Build lookup map: DB-line id / uuid → pos.order.line ─────────────
         line_by_id   = {}
         line_by_uuid = {}
         if pos_order:
@@ -86,7 +68,9 @@ class PosPreparationDirectController(http.Controller):
                   ol.qty, ol.preparation_printed_qty)
                  for ol in pos_order.lines])
 
-        # ── Job-based dedup: sum qty already printed for each line_uuid ───────
+        # ── Job-based dedup: sum qty already printed per line_uuid ────────────
+        # This is the authoritative source — it works even when lines weren't
+        # in the DB at the time of the first print (new unsynced orders).
         printed_by_line_uuid = {}
         if order_uuid:
             past_jobs = Job.search([
@@ -100,12 +84,12 @@ class PosPreparationDirectController(http.Controller):
                         printed_by_line_uuid[luuid] = (
                             printed_by_line_uuid.get(luuid, 0) + item.get('qty', 0)
                         )
-            _logger.info("[PrepDirect] Printed by line_uuid from past jobs: %s",
+            _logger.info("[PrepDirect] Already printed by line_uuid: %s",
                          printed_by_line_uuid)
 
         # ── Group lines by printer ────────────────────────────────────────────
-        printer_lines = defaultdict(list)
-        line_updates  = defaultdict(list)
+        printer_lines = defaultdict(list)   # printer → [{product_name, qty, note, line_uuid}]
+        line_updates  = defaultdict(list)   # printer → [(pos.order.line, qty_printed)]
         Product = request.env['product.product']
 
         for line in lines:
@@ -123,11 +107,13 @@ class PosPreparationDirectController(http.Controller):
             line_uuid = line.get('line_uuid', '')
             js_qty    = line.get('qty', 1)
 
+            # Try to find the DB line record for secondary dedup
             lid = _safe_int(line.get('line_id', 0))
             ol  = line_by_id.get(lid) if lid else None
             if ol is None and line_uuid:
                 ol = line_by_uuid.get(line_uuid)
 
+            # How much was already sent to kitchen for this specific line?
             already_printed = printed_by_line_uuid.get(line_uuid, 0)
             if ol and ol.preparation_printed_qty > already_printed:
                 already_printed = ol.preparation_printed_qty
@@ -135,14 +121,19 @@ class PosPreparationDirectController(http.Controller):
             qty = js_qty - already_printed
 
             _logger.info(
-                "[PrepDirect] %s  line_uuid=%s  js_qty=%.1f  already_printed=%.1f  → qty=%.1f",
+                "[PrepDirect] %s  uuid=%s  js_qty=%.1f  already=%.1f  → send=%.1f",
                 product.name, line_uuid, js_qty, already_printed, qty)
 
             if qty == 0:
-                _logger.info("[PrepDirect] %s — skipping (already printed)", product.name)
+                _logger.info("[PrepDirect] %s — skip (fully printed)", product.name)
                 continue
 
             printers = config.preparation_printer_ids & pos_categ.preparation_printer_ids
+            if not printers:
+                _logger.info("[PrepDirect] %s — no matching printer for category %s",
+                             product.name, pos_categ.name)
+                continue
+
             for printer in printers:
                 printer_lines[printer].append({
                     'product_name': line.get('product_name', product.name),
@@ -157,7 +148,7 @@ class PosPreparationDirectController(http.Controller):
             _logger.info("[PrepDirect] Nothing to print after dedup")
             return {'success': True, 'job_count': 0, 'message': 'No items to print'}
 
-        # ── Print ─────────────────────────────────────────────────────────────
+        # ── Print — one job per printer ───────────────────────────────────────
         success_count = 0
         failed_count  = 0
         errors        = []
@@ -166,7 +157,7 @@ class PosPreparationDirectController(http.Controller):
             if not plines:
                 continue
 
-            # Allocate ticket number BEFORE creating job so it's on the receipt
+            # Ticket number per printer job
             try:
                 ticket_number = int(
                     request.env['ir.sequence'].next_by_code(
@@ -185,35 +176,41 @@ class PosPreparationDirectController(http.Controller):
             }
 
             job_vals = {
-                'printer_id':      printer.id,
-                'order_name':      order_name,
-                'order_uuid':      order_uuid,
+                'printer_id':       printer.id,
+                'order_name':       order_name,
+                'order_uuid':       order_uuid,
+                # print_request_id is per (request, printer) — unique constraint
+                # is UNIQUE(print_request_id, printer_id) so multiple printers
+                # in one request each get their own row safely.
                 'print_request_id': print_request_id or False,
-                'ticket_number':   ticket_number,
-                'state':           'pending',
-                'line_data':       plines,
-                'table_name':      table_name,
-                'floor_name':      floor_name,
-                'waiter_name':     waiter_name,
-                'customer_note':   customer_note,
+                'ticket_number':    ticket_number,
+                'state':            'pending',
+                'line_data':        plines,
+                'table_name':       table_name,
+                'floor_name':       floor_name,
+                'waiter_name':      waiter_name,
+                'customer_note':    customer_note,
             }
             if pos_order and pos_order.exists():
                 job_vals['order_id'] = pos_order.id
 
-            # Create job record first — ensures it's always visible even if
-            # print fails or an exception is raised during socket send.
+            # Use a savepoint so an IntegrityError on this printer's job
+            # does NOT roll back jobs already created for other printers.
+            sp = f"job_create_{printer.id}"
             try:
+                request.env.cr.execute(f"SAVEPOINT {sp}")
                 job = Job.create(job_vals)
+                request.env.cr.execute(f"RELEASE SAVEPOINT {sp}")
             except IntegrityError:
-                # Race: another concurrent request already created a job with
-                # this print_request_id. Rollback savepoint and skip.
-                request.env.cr.rollback()
+                request.env.cr.execute(f"ROLLBACK TO SAVEPOINT {sp}")
                 _logger.warning(
-                    "[PrepDirect] Concurrent duplicate request_id=%s — skipping",
-                    print_request_id)
-                return {'success': True, 'job_count': 0, 'duplicate': True}
+                    "[PrepDirect] Duplicate request_id=%s for printer %s — skipping",
+                    print_request_id, printer.name)
+                # Count as success (already printed this request for this printer)
+                success_count += 1
+                continue
 
-            # Send to printer; catch all exceptions so job record is never lost
+            # Send to printer; catch exceptions so job record is never lost
             try:
                 success, error = printer.print_ticket(ticket_data)
             except Exception as exc:
@@ -226,10 +223,9 @@ class PosPreparationDirectController(http.Controller):
                 job.state = 'printed'
                 job.printed_date = fields.Datetime.now()
                 success_count += 1
+                _logger.info("[PrepDirect] Printed ticket #%s on %s",
+                             ticket_number, printer.name)
                 for ol, qty_printed in line_updates.get(printer, []):
-                    _logger.info(
-                        "[PrepDirect] Updating preparation_printed_qty on line %s: "
-                        "%.1f + %.1f", ol.id, ol.preparation_printed_qty, qty_printed)
                     ol.preparation_printed_qty += qty_printed
                     ol.preparation_printed = True
             else:

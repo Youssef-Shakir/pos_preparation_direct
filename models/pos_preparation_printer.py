@@ -201,12 +201,12 @@ class PosPreparationJob(models.Model):
     _description = 'POS Preparation Print Job'
     _order = 'create_date desc'
 
-    # Unique idempotency key per print attempt — prevents duplicate prints
-    # from race conditions (two tabs firing simultaneously).
-    # NULL values are allowed for records that pre-date this field.
+    # One job per (request, printer) pair — allows multiple printers per request
+    # while still blocking duplicate sends to the same printer.
+    # NULL print_request_id is excluded from the constraint automatically (PostgreSQL).
     _sql_constraints = [
-        ('print_request_id_uniq', 'UNIQUE(print_request_id)',
-         'This print request has already been processed.'),
+        ('print_request_printer_uniq', 'UNIQUE(print_request_id, printer_id)',
+         'This print request has already been processed for this printer.'),
     ]
 
     printer_id = fields.Many2one('pos.preparation.printer', string='Printer', required=True, ondelete='cascade')
