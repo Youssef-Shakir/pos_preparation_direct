@@ -42,20 +42,23 @@ class PosPreparationPrinter(models.Model):
     footer_text = fields.Char(string='Footer Text', help='Custom text to print at the bottom of tickets')
 
     # Retry settings
+    # retry_count / retry_interval are used ONLY by the background cron job.
+    # The HTTP request always makes exactly ONE attempt (no sleeping in workers).
     retry_count = fields.Integer(
-        string='Retry Attempts',
-        default=3,
-        help='Number of times to retry if printer is offline'
+        string='Auto-Retry Attempts (cron)',
+        default=0,
+        help='How many times the cron job will retry a failed print. '
+             '0 = no automatic retry (retry manually from Print Jobs list).'
     )
     retry_interval = fields.Integer(
-        string='Retry Interval (seconds)',
-        default=30,
-        help='Seconds to wait between retry attempts'
+        string='Retry Interval (minutes)',
+        default=5,
+        help='Minutes between automatic retry attempts by the cron job.'
     )
     connection_timeout = fields.Integer(
         string='Connection Timeout (seconds)',
         default=5,
-        help='Seconds to wait for printer connection'
+        help='Seconds to wait for printer connection before giving up.'
     )
 
     # Relations
@@ -136,52 +139,33 @@ class PosPreparationPrinter(models.Model):
         else:
             raise UserError(_('Print failed: %s') % error)
 
-    def print_ticket(self, data, use_retry=True):
+    def print_ticket(self, data):
         """
-        Print a preparation ticket with retry support.
+        Send one preparation ticket to the printer — single attempt, no sleeping.
 
-        Args:
-            data: dict with table_name, floor_name, waiter_name, order_name, customer_note, lines
-            use_retry: bool, whether to use retry logic (default True)
+        Retries must NEVER happen inside an HTTP request (they block the Odoo
+        worker thread and cause browser timeouts which trigger re-sends).
+        Background retries are handled by the cron job via action_retry_failed_jobs.
 
         Returns:
             tuple: (success: bool, error_message: str or None)
         """
         self.ensure_one()
-        import time
-
         ticket_bytes = escpos_encoder.build_preparation_ticket(
             data,
             self._get_printer_settings()
         )
-
-        max_attempts = self.retry_count + 1 if use_retry else 1
-        retry_interval = self.retry_interval
-        timeout = self.connection_timeout
-
-        last_error = None
-
-        for attempt in range(max_attempts):
-            if attempt > 0:
-                _logger.info(f"Retry attempt {attempt}/{self.retry_count} for {self.name} in {retry_interval}s...")
-                time.sleep(retry_interval)
-
-            success, error = escpos_encoder.send_to_printer(
-                self.ip_address,
-                self.port,
-                ticket_bytes,
-                timeout=timeout
-            )
-
-            if success:
-                _logger.info(f"Successfully printed to {self.name} ({self.ip_address}:{self.port})")
-                return True, None
-
-            last_error = error
-            _logger.warning(f"Print attempt {attempt + 1}/{max_attempts} failed for {self.name}: {error}")
-
-        _logger.error(f"All print attempts failed for {self.name}: {last_error}")
-        return False, last_error
+        success, error = escpos_encoder.send_to_printer(
+            self.ip_address,
+            self.port,
+            ticket_bytes,
+            timeout=self.connection_timeout,
+        )
+        if success:
+            _logger.info("Printed to %s (%s:%s)", self.name, self.ip_address, self.port)
+        else:
+            _logger.warning("Print failed on %s: %s", self.name, error)
+        return success, error
 
     def action_view_jobs(self):
         """View all jobs for this printer."""
@@ -284,31 +268,125 @@ class PosPreparationJob(models.Model):
             job.preview_text = '\n'.join(parts)
 
     def action_retry(self):
-        """Retry printing a failed job."""
+        """
+        Retry a failed job — dedup-aware.
+
+        Before reprinting, checks how much of each line_uuid was already
+        printed by OTHER successful jobs for the same order. Only prints
+        the remaining delta. This prevents double-prints when:
+          - the normal POS flow already resent the order while this job was failing
+          - the cron AND a manual retry fire at the same time
+        """
         self.ensure_one()
-        if self.state != 'failed':
+        if self.state not in ('failed', 'pending'):
             return
 
+        order_uuid = self.order_uuid or ''
+
+        # Sum what other PRINTED jobs already covered for this order
+        already_by_uuid = {}
+        if order_uuid:
+            other_jobs = self.search([
+                ('order_uuid', '=', order_uuid),
+                ('state', '=', 'printed'),
+                ('id', '!=', self.id),
+            ])
+            for job in other_jobs:
+                for item in (job.line_data or []):
+                    luuid = item.get('line_uuid', '')
+                    if luuid:
+                        already_by_uuid[luuid] = (
+                            already_by_uuid.get(luuid, 0) + item.get('qty', 0)
+                        )
+
+        # Compute delta lines — skip anything already covered
+        lines_to_print = []
+        for item in (self.line_data or []):
+            luuid = item.get('line_uuid', '')
+            stored_qty = item.get('qty', 0)
+            already = already_by_uuid.get(luuid, 0)
+            delta = stored_qty - already
+            if delta == 0:
+                _logger.info(
+                    "[PrepDirect retry] %s line_uuid=%s — skipping (already printed by other job)",
+                    item.get('product_name'), luuid)
+                continue
+            lines_to_print.append(dict(item, qty=delta))
+
+        self.retry_count += 1
+
+        if not lines_to_print:
+            _logger.info("[PrepDirect retry] Job #%s — nothing left to print (all covered)", self.id)
+            self.state = 'printed'
+            self.printed_date = fields.Datetime.now()
+            self.error_message = False
+            return True
+
         data = {
-            'table_name': self.table_name or '',
-            'floor_name': self.floor_name or '',
-            'waiter_name': self.waiter_name or '',
-            'order_name': self.order_name or '',
+            'table_name':    self.table_name or '',
+            'floor_name':    self.floor_name or '',
+            'waiter_name':   self.waiter_name or '',
+            'order_name':    self.order_name or '',
             'customer_note': self.customer_note or '',
-            'lines': self.line_data or [],
+            'lines':         lines_to_print,
+            'ticket_number': self.ticket_number or 0,
         }
 
         success, error = self.printer_id.print_ticket(data)
 
-        self.retry_count += 1
         if success:
             self.state = 'printed'
             self.printed_date = fields.Datetime.now()
             self.error_message = False
+            _logger.info("[PrepDirect retry] Job #%s — printed OK on retry #%s",
+                         self.id, self.retry_count)
+            # Update preparation_printed_qty on the DB lines if we can find them
+            if self.order_id:
+                for item in lines_to_print:
+                    luuid = item.get('line_uuid', '')
+                    if luuid:
+                        ol = self.order_id.lines.filtered(lambda l: l.uuid == luuid)
+                        if ol:
+                            ol[0].preparation_printed_qty += item.get('qty', 0)
+                            ol[0].preparation_printed = True
         else:
             self.error_message = error
+            _logger.warning("[PrepDirect retry] Job #%s — retry #%s failed: %s",
+                            self.id, self.retry_count, error)
 
         return True
+
+    @api.model
+    def action_retry_failed_jobs(self):
+        """
+        Cron entry point — automatically retry failed jobs.
+
+        Only retries jobs whose printer has retry_count > 0 and whose
+        last attempt was at least retry_interval minutes ago.
+        Each failed job is retried at most retry_count times total.
+        """
+        from datetime import timedelta
+        now = fields.Datetime.now()
+
+        failed_jobs = self.search([('state', '=', 'failed')])
+        for job in failed_jobs:
+            printer = job.printer_id
+            if not printer or printer.retry_count <= 0:
+                continue
+            if job.retry_count >= printer.retry_count:
+                _logger.info(
+                    "[PrepDirect cron] Job #%s exceeded max retries (%s/%s) — giving up",
+                    job.id, job.retry_count, printer.retry_count)
+                continue
+            # Check interval — use printed_date or create_date as last-attempt time
+            last_attempt = job.printed_date or job.create_date
+            minutes_since = (now - last_attempt).total_seconds() / 60
+            if minutes_since < printer.retry_interval:
+                continue
+            _logger.info(
+                "[PrepDirect cron] Retrying job #%s for printer %s (attempt %s/%s)",
+                job.id, printer.name, job.retry_count + 1, printer.retry_count)
+            job.action_retry()
 
     @api.model
     def cleanup_old_jobs(self, days=7):
@@ -320,4 +398,4 @@ class PosPreparationJob(models.Model):
             ('printed_date', '<', cutoff)
         ])
         old_jobs.unlink()
-        _logger.info(f"Cleaned up {len(old_jobs)} old preparation jobs")
+        _logger.info("Cleaned up %d old preparation jobs", len(old_jobs))
