@@ -57,7 +57,7 @@
                         <group string="Connection &amp; Auto-Retry">
                             <field name="connection_timeout"/>
                             <field name="retry_count" help="0 = no auto-retry. Set to 1-5 to allow the background cron to retry failed jobs."/>
-                            <field name="retry_interval" attrs="{'invisible': [('retry_count', '=', 0)]}" help="Minutes between cron retry attempts."/>
+                            <field name="retry_interval" invisible="retry_count == 0" help="Minutes between cron retry attempts."/>
                         </group>
                     </group>
                     <group string="Linked To">
