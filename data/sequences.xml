@@ -18,9 +18,7 @@
         <field name="code">model.action_retry_failed_jobs()</field>
         <field name="interval_number">1</field>
         <field name="interval_type">minutes</field>
-        <field name="numbercall">-1</field>
         <field name="active">True</field>
-        <field name="doall">False</field>
     </record>
 
     <!-- Cron: clean up old printed jobs (runs daily) -->
@@ -31,8 +29,6 @@
         <field name="code">model.cleanup_old_jobs(days=7)</field>
         <field name="interval_number">1</field>
         <field name="interval_type">days</field>
-        <field name="numbercall">-1</field>
         <field name="active">True</field>
-        <field name="doall">False</field>
     </record>
 </odoo>
