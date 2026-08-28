@@ -68,24 +68,27 @@ class PosPreparationDirectController(http.Controller):
                   ol.qty, ol.preparation_printed_qty)
                  for ol in pos_order.lines])
 
-        # ── Job-based dedup: sum qty already printed per line_uuid ────────────
-        # This is the authoritative source — it works even when lines weren't
-        # in the DB at the time of the first print (new unsynced orders).
-        printed_by_line_uuid = {}
+        # ── Job-based dedup: sum qty already printed per (printer, line_uuid) ──
+        # Tracked PER PRINTER so a product sent to both Kitchen and Bar doesn't
+        # double-count — Kitchen's jobs don't inflate Bar's already_printed and
+        # vice versa, which would produce spurious negative (cancellation) lines.
+        printed_by_printer_uuid = {}  # {printer_id: {line_uuid: qty}}
         if order_uuid:
             past_jobs = Job.search([
                 ('order_uuid', '=', order_uuid),
                 ('state', '=', 'printed'),
             ])
             for job in past_jobs:
+                pid = job.printer_id.id
+                if pid not in printed_by_printer_uuid:
+                    printed_by_printer_uuid[pid] = {}
                 for item in (job.line_data or []):
                     luuid = item.get('line_uuid', '')
                     if luuid:
-                        printed_by_line_uuid[luuid] = (
-                            printed_by_line_uuid.get(luuid, 0) + item.get('qty', 0)
-                        )
-            _logger.info("[PrepDirect] Already printed by line_uuid: %s",
-                         printed_by_line_uuid)
+                        d = printed_by_printer_uuid[pid]
+                        d[luuid] = d.get(luuid, 0) + item.get('qty', 0)
+            _logger.info("[PrepDirect] Already printed by (printer_id, line_uuid): %s",
+                         printed_by_printer_uuid)
 
         # ── Group lines by printer ────────────────────────────────────────────
         printer_lines = defaultdict(list)   # printer → [{product_name, qty, note, line_uuid}]
@@ -107,26 +110,11 @@ class PosPreparationDirectController(http.Controller):
             line_uuid = line.get('line_uuid', '')
             js_qty    = line.get('qty', 1)
 
-            # Try to find the DB line record for secondary dedup
+            # Try to find the DB line record
             lid = _safe_int(line.get('line_id', 0))
             ol  = line_by_id.get(lid) if lid else None
             if ol is None and line_uuid:
                 ol = line_by_uuid.get(line_uuid)
-
-            # How much was already sent to kitchen for this specific line?
-            already_printed = printed_by_line_uuid.get(line_uuid, 0)
-            if ol and ol.preparation_printed_qty > already_printed:
-                already_printed = ol.preparation_printed_qty
-
-            qty = js_qty - already_printed
-
-            _logger.info(
-                "[PrepDirect] %s  uuid=%s  js_qty=%.1f  already=%.1f  → send=%.1f",
-                product.name, line_uuid, js_qty, already_printed, qty)
-
-            if qty == 0:
-                _logger.info("[PrepDirect] %s — skip (fully printed)", product.name)
-                continue
 
             printers = config.preparation_printer_ids & pos_categ.preparation_printer_ids
             if not printers:
@@ -135,6 +123,33 @@ class PosPreparationDirectController(http.Controller):
                 continue
 
             for printer in printers:
+                # Per-printer dedup: each printer tracks its own history independently.
+                # This prevents a product assigned to two printers from double-counting
+                # and producing a spurious negative (cancellation) delta.
+                already_printed = printed_by_printer_uuid.get(printer.id, {}).get(line_uuid, 0)
+
+                qty = js_qty - already_printed
+
+                _logger.info(
+                    "[PrepDirect] %s → %s  uuid=%s  js_qty=%.1f  already=%.1f  → send=%.1f",
+                    product.name, printer.name, line_uuid, js_qty, already_printed, qty)
+
+                if qty == 0:
+                    _logger.info("[PrepDirect] %s → %s — skip (fully printed)",
+                                 product.name, printer.name)
+                    continue
+
+                # Safety: never generate a spurious cancellation.
+                # A negative delta when js_qty >= 0 means already_printed is wrong
+                # (e.g. stale DB data). Only print negatives when the POS itself
+                # sent a negative qty (explicit deletion/cancellation line).
+                if qty < 0 and js_qty >= 0:
+                    _logger.warning(
+                        "[PrepDirect] %s → %s: delta %.1f is negative but js_qty=%.1f "
+                        "— skipping spurious cancellation",
+                        product.name, printer.name, qty, js_qty)
+                    continue
+
                 printer_lines[printer].append({
                     'product_name': line.get('product_name', product.name),
                     'qty':          qty,
