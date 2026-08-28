@@ -267,6 +267,51 @@ class PosPreparationJob(models.Model):
                 parts.append(f"NOTE: {job.customer_note}")
             job.preview_text = '\n'.join(parts)
 
+    def _send_failure_alert(self, error_message=None):
+        """
+        Send a Telegram alert when this print job fails.
+        No-ops silently if telegram_reports is not installed or not configured.
+        """
+        if 'telegram.service' not in self.env:
+            return
+        try:
+            svc = self.env['telegram.service']
+            token = svc._get_bot_token()
+            chat_id = svc._get_default_chat_id()
+            if not token or not chat_id:
+                return
+
+            printer = self.printer_id
+            err = (error_message or self.error_message or 'Unknown error')[:200]
+
+            is_offline = any(kw in err for kw in (
+                'No route to host', 'Connection refused',
+                'timed out', 'Network unreachable', 'Errno'))
+
+            status = '📵 OFFLINE' if is_offline else '🔴 FAILED'
+
+            lines_preview = ''
+            for item in (self.line_data or [])[:5]:
+                qty = item.get('qty', 1)
+                name = item.get('product_name', '')
+                lines_preview += f"\n  {'❌' if qty < 0 else '•'} {qty}x {name}"
+
+            msg = (
+                f"<b>{status} — Printer Alert</b>\n"
+                f"🖨 <b>{printer.name}</b>  ({printer.ip_address}:{printer.port})\n"
+                f"📋 Order: {self.order_name or '—'}"
+            )
+            if self.table_name:
+                msg += f"   🪑 Table: {self.table_name}"
+            if self.ticket_number:
+                msg += f"\n🎫 Ticket #{self.ticket_number:04d}"
+            msg += f"\n{lines_preview}"
+            msg += f"\n\n⚠️ <code>{err}</code>"
+
+            svc.send_message(msg, chat_id=chat_id)
+        except Exception:
+            _logger.exception("[PrepDirect] Failed to send Telegram alert for job #%s", self.id)
+
     def action_retry(self):
         """
         Retry a failed job — dedup-aware.
@@ -353,6 +398,7 @@ class PosPreparationJob(models.Model):
             self.error_message = error
             _logger.warning("[PrepDirect retry] Job #%s — retry #%s failed: %s",
                             self.id, self.retry_count, error)
+            self._send_failure_alert(error)
 
         return True
 

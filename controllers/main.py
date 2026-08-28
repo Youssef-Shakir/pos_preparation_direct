@@ -250,6 +250,7 @@ class PosPreparationDirectController(http.Controller):
                 errors.append(f"{printer.name}: {error}")
                 _logger.warning(
                     "[PrepDirect] Print failed on %s: %s", printer.name, error)
+                job._send_failure_alert(error)
 
         _logger.info(
             "[PrepDirect] Done — success=%d  failed=%d", success_count, failed_count)
