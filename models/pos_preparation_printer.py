@@ -104,6 +104,11 @@ class PosPreparationPrinter(models.Model):
         self.ensure_one()
 
         # Build a test ticket
+        # Convert current time to user's timezone for correct printing
+        now_utc = fields.Datetime.now()
+        now_local = fields.Datetime.context_timestamp(self, now_utc)
+        print_time = now_local.strftime('%Y-%m-%d %H:%M')
+
         test_data = {
             'table_name': 'TEST',
             'floor_name': '',
@@ -113,6 +118,7 @@ class PosPreparationPrinter(models.Model):
             'lines': [
                 {'product_name': 'Test Print', 'qty': 1, 'note': ''},
             ],
+            'print_time': print_time,
         }
 
         ticket_bytes = escpos_encoder.build_preparation_ticket(
@@ -250,7 +256,9 @@ class PosPreparationJob(models.Model):
             if job.waiter_name:
                 parts.append(f"Waiter: {job.waiter_name}")
             if job.printed_date:
-                parts.append(f"Printed: {job.printed_date}")
+                # Convert to user's timezone for display
+                local_time = fields.Datetime.context_timestamp(job, job.printed_date)
+                parts.append(f"Printed: {local_time.strftime('%Y-%m-%d %H:%M:%S')}")
             parts.append("-" * 32)
             for item in (job.line_data or []):
                 qty = item.get('qty', 1)
@@ -367,6 +375,11 @@ class PosPreparationJob(models.Model):
             self.error_message = False
             return True
 
+        # Convert current time to user's timezone for correct printing
+        now_utc = fields.Datetime.now()
+        now_local = fields.Datetime.context_timestamp(self, now_utc)
+        print_time = now_local.strftime('%Y-%m-%d %H:%M')
+
         data = {
             'table_name':    self.table_name or '',
             'floor_name':    self.floor_name or '',
@@ -375,6 +388,7 @@ class PosPreparationJob(models.Model):
             'customer_note': self.customer_note or '',
             'lines':         lines_to_print,
             'ticket_number': self.ticket_number or 0,
+            'print_time':    print_time,
         }
 
         success, error = self.printer_id.print_ticket(data)

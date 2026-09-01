@@ -212,7 +212,9 @@ def build_preparation_ticket(data, printer_settings):
 
     # Ticket number line — helps identify which print job this receipt belongs to
     ticket_line = f"Ticket #{ticket_number:04d}" if ticket_number else ""
-    time_str    = datetime.now().strftime('%Y-%m-%d %H:%M')
+    # Use passed print_time (timezone-aware from Odoo) or fallback to local datetime
+    print_time  = data.get('print_time')
+    time_str    = print_time if print_time else datetime.now().strftime('%Y-%m-%d %H:%M')
     if ticket_line:
         out += rtext(f"{ticket_line}   {time_str}", sz_small)
     else:

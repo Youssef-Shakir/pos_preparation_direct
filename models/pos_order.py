@@ -141,6 +141,11 @@ class PosOrder(models.Model):
                 continue
 
             # Prepare ticket data
+            # Convert current time to user's timezone for correct printing
+            now_utc = fields.Datetime.now()
+            now_local = fields.Datetime.context_timestamp(self, now_utc)
+            print_time = now_local.strftime('%Y-%m-%d %H:%M')
+
             ticket_data = {
                 'table_name': table_name,
                 'floor_name': floor_name,
@@ -148,6 +153,7 @@ class PosOrder(models.Model):
                 'order_name': self.pos_reference or self.name,
                 'customer_note': customer_note,
                 'lines': lines,
+                'print_time': print_time,
             }
 
             # Create job record

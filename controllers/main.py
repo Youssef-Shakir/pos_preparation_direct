@@ -180,6 +180,11 @@ class PosPreparationDirectController(http.Controller):
             except Exception:
                 ticket_number = 0
 
+            # Convert current time to user's timezone for correct printing
+            now_utc = fields.Datetime.now()
+            now_local = fields.Datetime.context_timestamp(request.env.user, now_utc)
+            print_time = now_local.strftime('%Y-%m-%d %H:%M')
+
             ticket_data = {
                 'table_name':    table_name,
                 'floor_name':    floor_name,
@@ -188,6 +193,7 @@ class PosPreparationDirectController(http.Controller):
                 'customer_note': customer_note,
                 'lines':         plines,
                 'ticket_number': ticket_number,
+                'print_time':    print_time,
             }
 
             job_vals = {
