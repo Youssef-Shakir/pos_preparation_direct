@@ -74,9 +74,11 @@ class PosPreparationDirectController(http.Controller):
         # vice versa, which would produce spurious negative (cancellation) lines.
         printed_by_printer_uuid = {}  # {printer_id: {line_uuid: qty}}
         if order_uuid:
+            # 'pending' counts too: a pending job was committed right before its
+            # ticket was sent, so treat it as printed rather than risk a double print.
             past_jobs = Job.search([
                 ('order_uuid', '=', order_uuid),
-                ('state', '=', 'printed'),
+                ('state', 'in', ('printed', 'pending')),
             ])
             for job in past_jobs:
                 pid = job.printer_id.id
@@ -164,9 +166,16 @@ class PosPreparationDirectController(http.Controller):
             return {'success': True, 'job_count': 0, 'message': 'No items to print'}
 
         # ── Print — one job per printer ───────────────────────────────────────
+        # Phase 1 creates and COMMITS the job records, phase 2 sends to the
+        # printers. A printed ticket cannot be rolled back, so the job must be
+        # durable before printing: if the request is later retried by Odoo
+        # (serialization failure from a concurrent sync_from_ui on the same
+        # order), the retry hits the unique request_id / dedup and skips
+        # instead of printing the ticket a second time.
         success_count = 0
         failed_count  = 0
         errors        = []
+        to_print      = []   # [(printer, job, ticket_data)]
 
         for printer, plines in printer_lines.items():
             if not plines:
@@ -231,6 +240,11 @@ class PosPreparationDirectController(http.Controller):
                 success_count += 1
                 continue
 
+            to_print.append((printer, job, ticket_data))
+
+        request.env.cr.commit()
+
+        for printer, job, ticket_data in to_print:
             # Send to printer; catch exceptions so job record is never lost
             try:
                 success, error = printer.print_ticket(ticket_data)
@@ -245,10 +259,20 @@ class PosPreparationDirectController(http.Controller):
                 job.printed_date = fields.Datetime.now()
                 success_count += 1
                 _logger.info("[PrepDirect] Printed ticket #%s on %s",
-                             ticket_number, printer.name)
-                for ol, qty_printed in line_updates.get(printer, []):
-                    ol.preparation_printed_qty += qty_printed
-                    ol.preparation_printed = True
+                             ticket_data['ticket_number'], printer.name)
+                request.env.cr.commit()
+                # Informational only (dedup uses job records). These rows are
+                # also written by sync_from_ui, so never let a conflict here
+                # fail the request.
+                try:
+                    with request.env.cr.savepoint():
+                        for ol, qty_printed in line_updates.get(printer, []):
+                            ol.preparation_printed_qty += qty_printed
+                            ol.preparation_printed = True
+                except Exception as exc:
+                    request.env.invalidate_all()
+                    _logger.info(
+                        "[PrepDirect] Skipped printed-qty update on order lines: %s", exc)
             else:
                 job.state = 'failed'
                 job.error_message = error
@@ -257,6 +281,7 @@ class PosPreparationDirectController(http.Controller):
                 _logger.warning(
                     "[PrepDirect] Print failed on %s: %s", printer.name, error)
                 job._send_failure_alert(error)
+            request.env.cr.commit()
 
         _logger.info(
             "[PrepDirect] Done — success=%d  failed=%d", success_count, failed_count)

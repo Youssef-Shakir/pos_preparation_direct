@@ -1,14 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <record id="sequence_preparation_ticket" model="ir.sequence">
-        <field name="name">Preparation Ticket Number</field>
-        <field name="code">pos.preparation.job.ticket</field>
-        <field name="prefix"></field>
-        <field name="suffix"></field>
-        <field name="padding">4</field>
-        <field name="number_next">1</field>
-        <field name="number_increment">1</field>
-    </record>
+    <!-- noupdate: created once on install. Module upgrades must never touch
+         it again, otherwise number_next is written back to 1 and the ticket
+         numbers restart mid-service. -->
+    <data noupdate="1">
+        <record id="sequence_preparation_ticket" model="ir.sequence">
+            <field name="name">Preparation Ticket Number</field>
+            <field name="code">pos.preparation.job.ticket</field>
+            <field name="prefix"></field>
+            <field name="suffix"></field>
+            <field name="padding">4</field>
+            <field name="number_next">1</field>
+            <field name="number_increment">1</field>
+        </record>
+    </data>
 
     <!-- Cron: auto-retry failed print jobs (runs every minute, printer settings control actual interval) -->
     <record id="cron_retry_failed_print_jobs" model="ir.cron">
