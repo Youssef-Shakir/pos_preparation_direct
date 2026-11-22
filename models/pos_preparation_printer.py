@@ -5,6 +5,9 @@ from . import escpos_encoder
 
 _logger = logging.getLogger(__name__)
 
+# Automatic/manual retries never print a ticket older than this.
+RETRY_MAX_AGE_MINUTES = 45
+
 
 class PosPreparationPrinter(models.Model):
     _name = 'pos.preparation.printer'
@@ -336,15 +339,34 @@ class PosPreparationJob(models.Model):
 
         order_uuid = self.order_uuid or ''
 
-        # Sum what other PRINTED jobs already covered for this order
+        # A late ticket is worse than none: the waiter has re-sent it or the
+        # table may be gone. Never print a ticket older than the limit.
+        from datetime import timedelta
+        if self.create_date and fields.Datetime.now() - self.create_date > timedelta(
+                minutes=RETRY_MAX_AGE_MINUTES):
+            # Stop the cron from trying again.
+            self.retry_count = max(self.retry_count + 1, self.printer_id.retry_count)
+            self.error_message = (
+                f"Not retried: older than {RETRY_MAX_AGE_MINUTES} minutes "
+                f"({self.error_message or ''})")[:500]
+            _logger.info("[PrepDirect retry] Job #%s — too old, not printed", self.id)
+            return True
+
+        # Quantities printed for each line on THIS printer by printed jobs
+        # created after this one. A failed job is not counted as printed by
+        # the POS, so the next "Order" press resends its items; those later
+        # jobs already cover it. Other printers are ignored: an item sent to
+        # two printers (e.g. pizza + west) must not cover this printer's copy.
         already_by_uuid = {}
         if order_uuid:
-            other_jobs = self.search([
+            later_jobs = self.search([
                 ('order_uuid', '=', order_uuid),
+                ('printer_id', '=', self.printer_id.id),
                 ('state', '=', 'printed'),
                 ('id', '!=', self.id),
+                ('create_date', '>=', self.create_date),
             ])
-            for job in other_jobs:
+            for job in later_jobs:
                 for item in (job.line_data or []):
                     luuid = item.get('line_uuid', '')
                     if luuid:
@@ -352,16 +374,17 @@ class PosPreparationJob(models.Model):
                             already_by_uuid.get(luuid, 0) + item.get('qty', 0)
                         )
 
-        # Compute delta lines — skip anything already covered
+        # Print only what is still missing; never print a negative
+        # (cancellation) line from a retry.
         lines_to_print = []
         for item in (self.line_data or []):
             luuid = item.get('line_uuid', '')
             stored_qty = item.get('qty', 0)
             already = already_by_uuid.get(luuid, 0)
             delta = stored_qty - already
-            if delta == 0:
+            if stored_qty <= 0 or delta <= 0:
                 _logger.info(
-                    "[PrepDirect retry] %s line_uuid=%s — skipping (already printed by other job)",
+                    "[PrepDirect retry] %s line_uuid=%s — skipping (already printed by a later job)",
                     item.get('product_name'), luuid)
                 continue
             lines_to_print.append(dict(item, qty=delta))
