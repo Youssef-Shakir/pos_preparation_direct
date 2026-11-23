@@ -1,6 +1,6 @@
 {
     'name': 'POS Preparation Direct Print',
-    'version': '18.0.1.1.0',
+    'version': '18.0.1.2.0',
     'category': 'Point of Sale',
     'summary': 'Direct ESC/POS printing for kitchen/bar preparation tickets',
     'description': """

@@ -1,3 +1,4 @@
+import html
 import logging
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
@@ -280,33 +281,31 @@ class PosPreparationJob(models.Model):
 
     def _send_failure_alert(self, error_message=None):
         """
-        Send a Telegram alert when this print job fails.
-        No-ops silently if telegram_reports is not installed or not configured.
+        Alert when this print job fails: an organized card in the DoniaLink App (kind "printer_alert", when
+        telegram_reports and the app are installed) and the Telegram message (when a bot is configured).
+        Never raises.
         """
-        if 'telegram.service' not in self.env:
-            return
         try:
+            printer = self.printer_id
+            err = (error_message or self.error_message or 'Unknown error')[:200]
+            is_offline = any(kw in err for kw in (
+                'No route to host', 'Connection refused',
+                'timed out', 'Network unreachable', 'Errno'))
+            status = '📵 OFFLINE' if is_offline else '🔴 FAILED'
+            items = [(item.get('qty', 1), item.get('product_name', '')) for item in (self.line_data or [])]
+
+            self._send_failure_alert_app(printer, err, is_offline, items)
+
+            if 'telegram.service' not in self.env:
+                return
             svc = self.env['telegram.service']
             token = svc._get_bot_token()
             chat_id = svc._get_default_chat_id()
             if not token or not chat_id:
                 return
-
-            printer = self.printer_id
-            err = (error_message or self.error_message or 'Unknown error')[:200]
-
-            is_offline = any(kw in err for kw in (
-                'No route to host', 'Connection refused',
-                'timed out', 'Network unreachable', 'Errno'))
-
-            status = '📵 OFFLINE' if is_offline else '🔴 FAILED'
-
             lines_preview = ''
-            for item in (self.line_data or [])[:5]:
-                qty = item.get('qty', 1)
-                name = item.get('product_name', '')
+            for qty, name in items[:5]:
                 lines_preview += f"\n  {'❌' if qty < 0 else '•'} {qty}x {name}"
-
             msg = (
                 f"<b>{status} — Printer Alert</b>\n"
                 f"🖨 <b>{printer.name}</b>  ({printer.ip_address}:{printer.port})\n"
@@ -318,10 +317,39 @@ class PosPreparationJob(models.Model):
                 msg += f"\n🎫 Ticket #{self.ticket_number:04d}"
             msg += f"\n{lines_preview}"
             msg += f"\n\n⚠️ <code>{err}</code>"
-
-            svc.send_message(msg, chat_id=chat_id)
+            # the app already has its card: Telegram only
+            svc.with_context(dl_app_done=True).send_message(msg, chat_id=chat_id)
         except Exception:
-            _logger.exception("[PrepDirect] Failed to send Telegram alert for job #%s", self.id)
+            _logger.exception("[PrepDirect] Failed to send the alert for job #%s", self.id)
+
+    def _send_failure_alert_app(self, printer, err, is_offline, items):
+        """The printer alert in the DoniaLink App, organized: printer, order, table, ticket, items, error."""
+        Message = self.env.get('donialink.app.message')
+        if Message is None or not hasattr(Message, '_dl_from_telegram'):
+            return
+        esc = lambda value: html.escape(str(value or ''), quote=True)
+        state = 'الطابعة غير متصلة' if is_offline else 'فشلت الطباعة'
+        title = f"{'📵' if is_offline else '🔴'} {state}: {printer.name}"
+        lead = ' · '.join(filter(None, [state, printer.name, self.order_name and f"طلب {self.order_name}",
+                                        self.table_name and f"طاولة {self.table_name}"]))
+        chips = ''.join(f'<span>{esc(c)}</span>' for c in filter(None, [
+            f"🖨 {printer.name} ({printer.ip_address}:{printer.port})",
+            f"📋 {self.order_name}" if self.order_name else '',
+            f"🪑 طاولة {self.table_name}" if self.table_name else '',
+            f"🎫 تذكرة #{self.ticket_number:04d}" if self.ticket_number else '']))
+        rows = ''.join(
+            f'<tr><td class="num">{esc(f"{qty:g}" if isinstance(qty, (int, float)) else qty)}</td>'
+            f'<td>{"❌ " if isinstance(qty, (int, float)) and qty < 0 else ""}{esc(name)}</td></tr>'
+            for qty, name in items[:30])
+        body = (
+            f'<div class="dl-rep"><p class="dl-rep-lead">{esc(lead)}</p><p class="dl-rep-meta">{chips}</p>'
+            + (f'<h4 class="dl-rep-h">🧾 التذكرة التي لم تُطبع</h4><div class="dl-rep-scroll"><table class="dl-rep-table"><thead><tr>'
+               f'<th class="num">الكمية</th><th>المنتج</th></tr></thead><tbody>{rows}</tbody></table></div>' if rows else '')
+            + f'<h4 class="dl-rep-h">⚠️ الخطأ</h4><p class="dl-rep-note">{esc(err)}</p>'
+            + '<p class="dl-rep-foot">تأكد أن الطابعة مشغّلة ومتصلة بالشبكة، ثم أعد الطباعة من أودو.</p></div>')
+        company = self.order_id.company_id or self.env.company
+        Message._dl_from_telegram('printer_alert', title, company, title=title, html_body=body,
+                                  url='/odoo/pos.preparation.job/%s' % self.id, fallback_kind='pos_order_alert')
 
     def action_retry(self):
         """
